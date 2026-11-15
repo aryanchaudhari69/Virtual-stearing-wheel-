@@ -1,0 +1,1140 @@
+<!--
+================================================================================
+  CYBERWHEEL 3D HUD & COCKPIT SIMULATOR - STANDALONE OFFLINE PRODUCTION BUILD
+  Version: v3.5 (Holo Ghost Hands, MediaPipe AI Tracking, 3D Chase Cam & HUD)
+================================================================================
+  INSTRUCTIONS FOR USE:
+  1. Save this file as `index.html`.
+  2. Double-click to open in Google Chrome, Edge, or Brave.
+     - Webcam access requires HTTPS or localhost (or opening directly in browser).
+     - Full keyboard simulation is built-in: [◄] / [►] steer, [SPACE] brake, [C] switch view.
+     - WebSocket telemetry attempts connection to `ws://localhost:8000` (auto-reconnects safely).
+================================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CYBERWHEEL HUB & Cockpit Simulator</title>
+
+    <!-- Google Fonts for Cockpit HUD -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        hud: {
+                            cyan: '#00d2ff',
+                            cyanGlow: 'rgba(0, 210, 255, 0.7)',
+                            green: '#00ff88',
+                            amber: '#f59e0b',
+                            orange: '#fb923c',
+                            red: '#ff0044',
+                            dark: '#030813',
+                            panelBg: 'rgba(6, 16, 32, 0.88)'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        orbitron: ['Orbitron', 'sans-serif'],
+                        rajdhani: ['Rajdhani', 'sans-serif'],
+                        mono: ['Share Tech Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Three.js (3D WebGL Engine) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <!-- MediaPipe Vision Hand Tracking Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background-color: #030813;
+            color: #ffffff;
+            font-family: 'Share Tech Mono', monospace;
+            user-select: none;
+        }
+
+        #threejs-viewport {
+            position: absolute;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+            pointer-events: auto;
+        }
+
+        .hud-overlay {
+            position: absolute;
+            inset: 0;
+            z-index: 10;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 18px 24px;
+        }
+
+        .interactive-panel {
+            pointer-events: auto;
+        }
+
+        .hud-glass {
+            background: rgba(6, 16, 33, 0.82);
+            backdrop-filter: blur(12px);
+            border: 1.5px solid rgba(0, 210, 255, 0.35);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8), inset 0 0 16px rgba(0, 210, 255, 0.08);
+        }
+
+        .hud-glass-subtle {
+            background: rgba(4, 12, 24, 0.65);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(0, 210, 255, 0.2);
+        }
+
+        .glow-cyan {
+            text-shadow: 0 0 10px rgba(0, 210, 255, 0.85), 0 0 20px rgba(0, 210, 255, 0.4);
+        }
+        .glow-green {
+            text-shadow: 0 0 12px rgba(0, 255, 136, 0.85), 0 0 24px rgba(0, 255, 136, 0.4);
+        }
+        .glow-orange {
+            text-shadow: 0 0 10px rgba(251, 146, 60, 0.85), 0 0 20px rgba(251, 146, 60, 0.4);
+        }
+        .glow-red {
+            text-shadow: 0 0 14px rgba(255, 0, 68, 0.9), 0 0 26px rgba(255, 0, 68, 0.5);
+        }
+
+        /* Mirrored video for natural driver perspective */
+        .mirrored {
+            transform: scaleX(-1);
+        }
+
+        /* Scanline CRT overlay */
+        .scanlines {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%);
+            background-size: 100% 4px;
+            pointer-events: none;
+            z-index: 5;
+            opacity: 0.6;
+        }
+
+        /* Tech corner brackets */
+        .tech-corners {
+            position: relative;
+        }
+        .tech-corners::before, .tech-corners::after {
+            content: '';
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            pointer-events: none;
+        }
+        .tech-corners::before {
+            top: -1px; left: -1px;
+            border-top: 2px solid #00d2ff;
+            border-left: 2px solid #00d2ff;
+        }
+        .tech-corners::after {
+            bottom: -1px; right: -1px;
+            border-bottom: 2px solid #00d2ff;
+            border-right: 2px solid #00d2ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="scanlines"></div>
+    <div id="threejs-viewport"></div>
+
+    <!-- HUD OVERLAY LAYER -->
+    <div class="hud-overlay">
+        
+        <!-- =========================================================
+             1. TOP HEADER & TELEMETRY CLUSTER
+             ========================================================= -->
+        <div class="flex items-start justify-between w-full">
+            
+            <!-- Left Branding & Version -->
+            <div class="interactive-panel flex items-center space-x-3.5">
+                <div class="w-10 h-10 rounded-lg border-2 border-hud-cyan flex items-center justify-center text-hud-cyan shadow-[0_0_18px_#00d2ff] bg-[#061224]/80">
+                    <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.2">
+                        <circle cx="12" cy="12" r="9" />
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M12 3v6M12 15v6M3 12h6M15 12h6" />
+                    </svg>
+                </div>
+                <div>
+                    <div class="flex items-center space-x-2">
+                        <span class="font-orbitron font-extrabold text-xl tracking-wider text-hud-cyan glow-cyan">CYBERWHEEL HUB</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-hud-cyan/15 border border-hud-cyan/40 text-hud-cyan font-mono">v3.5 HOLO-SYNC</span>
+                    </div>
+                    <div class="text-[11px] text-slate-400 font-mono tracking-wide">
+                        NEURAL TELEMETRY & HOLOGRAPHIC GHOST HAND COCKPIT
+                    </div>
+                </div>
+            </div>
+
+            <!-- Center Speed & RPM Cluster -->
+            <div class="hud-glass tech-corners px-6 py-2 rounded-lg flex items-center space-x-8 text-center">
+                <div>
+                    <div class="text-[9px] text-slate-400 tracking-wider">VELOCITY</div>
+                    <div class="flex items-baseline space-x-1">
+                        <span id="speed-val" class="font-orbitron text-3xl font-black text-white glow-cyan">162</span>
+                        <span class="text-xs text-hud-cyan">KM/H</span>
+                    </div>
+                </div>
+                <div class="h-8 w-px bg-hud-cyan/30"></div>
+                <div>
+                    <div class="text-[9px] text-slate-400 tracking-wider">ENGINE RPM</div>
+                    <div id="rpm-val" class="font-orbitron text-2xl font-bold text-hud-green glow-green">3,565</div>
+                </div>
+                <div class="h-8 w-px bg-hud-cyan/30"></div>
+                <div>
+                    <div class="text-[9px] text-slate-400 tracking-wider">GEAR</div>
+                    <div class="font-orbitron text-2xl font-bold text-hud-orange glow-orange">D 4</div>
+                </div>
+            </div>
+
+            <!-- Right Controls: Holo Hands toggle, Glow slider, Camera Presets -->
+            <div class="interactive-panel flex items-center space-x-3">
+                <!-- Holo Hands Toggle Button -->
+                <button id="holo-hands-toggle" class="hud-glass px-3.5 py-1.5 rounded text-xs font-mono text-hud-cyan border border-hud-cyan/50 hover:bg-hud-cyan/20 transition flex items-center space-x-2 cursor-pointer shadow-[0_0_12px_rgba(0,210,255,0.25)]">
+                    <span id="holo-dot" class="w-2 h-2 rounded-full bg-hud-green animate-pulse"></span>
+                    <span id="holo-label">HOLO HANDS: ON</span>
+                </button>
+
+                <!-- Glow Slider -->
+                <div class="hud-glass px-3 py-1.5 rounded flex items-center space-x-2 text-xs font-mono text-slate-300">
+                    <span class="text-[10px] text-hud-cyan">GLOW</span>
+                    <input id="glow-slider" type="range" min="0.2" max="2.0" step="0.1" value="1.0" class="w-16 accent-hud-cyan cursor-pointer">
+                </div>
+
+                <!-- Camera Angle Selector Buttons -->
+                <div class="hud-glass p-1 rounded flex space-x-1">
+                    <button id="cam-cockpit" class="cam-btn px-2.5 py-1 rounded text-xs font-semibold bg-hud-cyan text-slate-950 font-mono shadow-[0_0_10px_#00d2ff] cursor-pointer">COCKPIT 3D</button>
+                    <button id="cam-chase" class="cam-btn px-2.5 py-1 rounded text-xs font-semibold text-slate-300 hover:text-white font-mono cursor-pointer">CHASE CAM</button>
+                    <button id="cam-wheel" class="cam-btn px-2.5 py-1 rounded text-xs font-semibold text-slate-300 hover:text-white font-mono cursor-pointer">WHEEL FOCUS</button>
+                </div>
+
+                <!-- Sim Mode Status -->
+                <div class="hud-glass px-3 py-1.5 rounded text-xs font-mono flex items-center space-x-2 text-hud-cyan">
+                    <span class="w-2 h-2 rounded-full bg-hud-cyan animate-pulse"></span>
+                    <span>LOCAL SIM</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- =========================================================
+             2. CENTER ARTIFICIAL HORIZON & DYNAMICS
+             ========================================================= -->
+        <div class="w-full flex items-center justify-between px-6 pointer-events-none">
+            <!-- Left Info Panel: G-Force Dynamics -->
+            <div class="hud-glass tech-corners p-4 rounded-xl w-60 text-xs font-mono space-y-3">
+                <div class="flex justify-between items-center border-b border-hud-cyan/30 pb-1">
+                    <span class="text-hud-cyan font-bold tracking-wider">G-FORCE & DYNAMICS</span>
+                    <span class="text-[10px] text-slate-400">GYRO-3D</span>
+                </div>
+
+                <!-- 2D Gyro Ball Reticle -->
+                <div class="relative w-full h-24 flex items-center justify-center">
+                    <div class="w-20 h-20 rounded-full border border-hud-cyan/40 flex items-center justify-center relative">
+                        <div class="w-10 h-10 rounded-full border border-hud-cyan/20"></div>
+                        <div class="absolute w-full h-px bg-hud-cyan/30"></div>
+                        <div class="absolute h-full w-px bg-hud-cyan/30"></div>
+                        <!-- Reactive G-Ball -->
+                        <div id="gyro-dot" class="w-3.5 h-3.5 rounded-full bg-hud-cyan shadow-[0_0_10px_#00d2ff] absolute transition-all duration-75" style="transform: translate(0px, 0px);"></div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-2 text-[11px] pt-1">
+                    <div class="hud-glass-subtle p-1.5 rounded text-center">
+                        <div class="text-[9px] text-slate-400">LATERAL</div>
+                        <div id="g-lat" class="font-bold text-hud-cyan">+0.00 G</div>
+                    </div>
+                    <div class="hud-glass-subtle p-1.5 rounded text-center">
+                        <div class="text-[9px] text-slate-400">LONGITUDINAL</div>
+                        <div id="g-long" class="font-bold text-hud-green">+0.68 G</div>
+                    </div>
+                </div>
+
+                <!-- Tire Pressure Status -->
+                <div class="text-[10px] border-t border-hud-cyan/20 pt-2 space-y-1">
+                    <div class="flex justify-between text-slate-400">
+                        <span>TIRE PRESSURES</span>
+                        <span class="text-hud-green">OPTIMAL 32 PSI</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-1 text-[9px] text-hud-cyan">
+                        <div class="bg-black/30 p-1 rounded text-center">FL: 32.2 PSI</div>
+                        <div class="bg-black/30 p-1 rounded text-center">FR: 32.1 PSI</div>
+                        <div class="bg-black/30 p-1 rounded text-center">RL: 32.0 PSI</div>
+                        <div class="bg-black/30 p-1 rounded text-center">RR: 32.0 PSI</div>
+                    </div>
+                </div>
+
+                <div class="text-[9px] text-slate-400 flex justify-between pt-1">
+                    <span>HOLO MATRIX:</span>
+                    <span class="text-hud-cyan">ARTICULATED DUAL-PALM</span>
+                </div>
+            </div>
+
+            <!-- Pitch & Horizon Crosshair Reticle -->
+            <div id="horizon-reticle" class="flex flex-col items-center justify-center transition-transform duration-75">
+                <svg width="220" height="40" viewBox="0 0 220 40" fill="none" class="overflow-visible">
+                    <!-- Left chevrons -->
+                    <path d="M10 20 L25 15 L25 25 Z" stroke="#00d2ff" stroke-width="1.5" fill="none" />
+                    <path d="M30 20 L45 15 L45 25 Z" stroke="#00d2ff" stroke-width="1.5" fill="none" />
+                    <!-- Center Pitch Bars -->
+                    <line x1="60" y1="20" x2="95" y2="20" stroke="#00d2ff" stroke-width="2" />
+                    <line x1="75" y1="12" x2="85" y2="12" stroke="#00d2ff" stroke-width="1" />
+                    <line x1="75" y1="28" x2="85" y2="28" stroke="#00d2ff" stroke-width="1" />
+                    <text x="90" y="10" fill="#00d2ff" font-size="8" font-family="Share Tech Mono">+10</text>
+                    <text x="90" y="34" fill="#00d2ff" font-size="8" font-family="Share Tech Mono">-10</text>
+                    
+                    <circle cx="110" cy="20" r="14" stroke="#00d2ff" stroke-width="1.5" stroke-dasharray="4 2" />
+                    <circle cx="110" cy="20" r="3" fill="#00d2ff" />
+
+                    <line x1="125" y1="20" x2="160" y2="20" stroke="#00d2ff" stroke-width="2" />
+                    <line x1="135" y1="12" x2="145" y2="12" stroke="#00d2ff" stroke-width="1" />
+                    <line x1="135" y1="28" x2="145" y2="28" stroke="#00d2ff" stroke-width="1" />
+                    <text x="125" y="10" fill="#00d2ff" font-size="8" font-family="Share Tech Mono">+10</text>
+                    <text x="125" y="34" fill="#00d2ff" font-size="8" font-family="Share Tech Mono">-10</text>
+                    <!-- Right chevrons -->
+                    <path d="M175 15 L190 20 L175 25 Z" stroke="#00d2ff" stroke-width="1.5" fill="none" />
+                    <path d="M195 15 L210 20 L195 25 Z" stroke="#00d2ff" stroke-width="1.5" fill="none" />
+                </svg>
+            </div>
+
+            <!-- Right Optical Webcam & Circuit Mini-Map -->
+            <div class="interactive-panel hud-glass tech-corners p-3.5 rounded-xl w-72 text-xs font-mono space-y-3">
+                <div class="flex justify-between items-center border-b border-hud-cyan/30 pb-1">
+                    <span class="text-hud-cyan font-bold tracking-wider">OPTICAL WEBCAM PIP</span>
+                    <span class="text-[10px] text-hud-green flex items-center space-x-1">
+                        <span class="w-1.5 h-1.5 rounded-full bg-hud-green animate-pulse"></span>
+                        <span>AI TRACKING</span>
+                    </span>
+                </div>
+
+                <!-- Video Viewport / MediaPipe Canvas -->
+                <div class="relative w-full h-36 rounded-lg overflow-hidden border border-hud-cyan/40 bg-black/70">
+                    <video id="webcam-video" class="absolute inset-0 w-full h-full object-cover mirrored" playsinline muted></video>
+                    <canvas id="pip-canvas" class="absolute inset-0 w-full h-full object-cover"></canvas>
+                    
+                    <!-- Standby Indicator when camera is offline -->
+                    <div id="pip-standby" class="absolute inset-0 flex flex-col items-center justify-center bg-[#051020]/90 p-2 text-center">
+                        <div class="text-hud-cyan mb-1">
+                            <svg class="w-6 h-6 inline animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                        </div>
+                        <div class="text-[11px] font-bold text-white tracking-wide">MEDIAPIPE HAND AI</div>
+                        <div class="text-[9px] text-slate-400 mt-0.5">CAMERA STANDBY</div>
+                        <button id="btn-activate-camera" class="mt-2 px-3 py-1 bg-hud-cyan/20 border border-hud-cyan text-hud-cyan rounded text-[10px] font-bold hover:bg-hud-cyan hover:text-slate-950 transition cursor-pointer">
+                            ACTIVATE WEBCAM
+                        </button>
+                    </div>
+
+                    <!-- Hands tracked counter -->
+                    <div class="absolute bottom-1 right-2 text-[9px] font-mono bg-black/60 px-1.5 py-0.5 rounded text-slate-300">
+                        HANDS: <span id="hands-count" class="text-hud-cyan font-bold">0/2</span>
+                    </div>
+                </div>
+
+                <!-- Big Primary Action Button -->
+                <button id="btn-main-camera" class="w-full py-1.5 rounded-lg bg-hud-cyan/20 hover:bg-hud-cyan/30 border border-hud-cyan text-hud-cyan text-xs font-bold tracking-wider uppercase transition flex items-center justify-center space-x-1.5 cursor-pointer shadow-[0_0_15px_rgba(0,210,255,0.2)]">
+                    <span class="w-2 h-2 rounded-full bg-hud-cyan animate-pulse"></span>
+                    <span>START WEBCAM & AI TRACKING</span>
+                </button>
+
+                <!-- Mini Radar / Circuit map -->
+                <div class="border-t border-hud-cyan/20 pt-2 space-y-1">
+                    <div class="flex justify-between text-[10px] text-slate-400">
+                        <span>CIRCUIT: CYBER-GRID 01</span>
+                        <span class="text-hud-orange">SECTOR 2</span>
+                    </div>
+                    <div class="relative w-full h-14 bg-black/40 rounded border border-hud-cyan/20 flex items-center justify-center overflow-hidden">
+                        <div class="w-20 h-20 rounded-full border border-hud-cyan/20 absolute"></div>
+                        <div class="w-12 h-12 rounded-full border border-hud-cyan/40 absolute"></div>
+                        <div class="w-2 h-2 rounded-full bg-hud-green absolute"></div>
+                        <div class="w-1.5 h-1.5 rounded-full bg-hud-orange absolute top-3 right-6 animate-ping"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- =========================================================
+             3. BOTTOM CONSOLE & STEERING TELEMETRY
+             ========================================================= -->
+        <div class="w-full max-w-5xl mx-auto interactive-panel">
+            <div class="hud-glass tech-corners p-3.5 rounded-xl grid grid-cols-12 items-center gap-4">
+                
+                <!-- Left: 3D Steering Angle Slider & Arc (4 cols) -->
+                <div class="col-span-4 border-r border-hud-cyan/30 pr-4">
+                    <div class="flex justify-between items-center text-xs mb-1">
+                        <span class="text-slate-400 uppercase tracking-wider text-[10px]">3D Steering Angle</span>
+                        <span id="angle-readout" class="font-bold text-hud-cyan glow-cyan">+0.00 (0° CENTER)</span>
+                    </div>
+
+                    <!-- Arc tick graphic -->
+                    <div class="relative flex justify-center py-1">
+                        <svg width="180" height="42" viewBox="0 0 180 42">
+                            <!-- Semicircle radial ticks -->
+                            <g id="ticks-container"></g>
+                        </svg>
+                    </div>
+
+                    <!-- Manual input slider for mouse users -->
+                    <div class="flex items-center space-x-2 text-xs">
+                        <span class="text-[9px] text-slate-500">◄ L</span>
+                        <input id="steer-slider" type="range" min="-1" max="1" step="0.01" value="0" class="w-full accent-hud-cyan cursor-pointer">
+                        <span class="text-[9px] text-slate-500">R ►</span>
+                    </div>
+                </div>
+
+                <!-- Center: Directional Status Feedback (5 cols) -->
+                <div class="col-span-5 text-center">
+                    <div class="text-[10px] text-slate-400 uppercase tracking-widest mb-1">DIRECTIONAL VECTOR & HOLO GHOST RIG</div>
+                    <div id="turn-banner" class="text-xl font-bold font-orbitron text-slate-400 tracking-wider">
+                        — NEUTRAL STEER —
+                    </div>
+                    <div class="text-[11px] text-slate-400 mt-1 space-x-2">
+                        <span>HANDS: <span class="text-hud-cyan">[TILT = STEER]</span></span>
+                        <span>|</span>
+                        <span><span class="text-hud-red">[FIST = BRAKE]</span></span>
+                    </div>
+                    <div class="text-[10px] text-slate-500 mt-0.5">
+                        KEYS: [◄ / ►] | [SPACE]
+                    </div>
+                </div>
+
+                <!-- Right: Brake / Throttle / Engine Re-Center (3 cols) -->
+                <div class="col-span-3 border-l border-hud-cyan/30 pl-4 flex items-center justify-between">
+                    <!-- Brake status bar -->
+                    <div class="flex flex-col items-center">
+                        <span class="text-[9px] text-slate-400 mb-1">BRAKE</span>
+                        <div class="w-4 h-14 bg-black/60 rounded border border-hud-red/40 p-0.5 flex flex-col justify-end">
+                            <div id="brake-bar" class="w-full bg-hud-red rounded-sm transition-all duration-75" style="height: 0%;"></div>
+                        </div>
+                        <span id="brake-pct" class="text-[9px] text-slate-400 mt-1">0%</span>
+                    </div>
+
+                    <!-- Throttle status bar -->
+                    <div class="flex flex-col items-center">
+                        <span class="text-[9px] text-slate-400 mb-1">THROTTLE</span>
+                        <div class="w-4 h-14 bg-black/60 rounded border border-hud-green/40 p-0.5 flex flex-col justify-end">
+                            <div id="throttle-bar" class="w-full bg-hud-green rounded-sm transition-all duration-75 shadow-[0_0_8px_#00ff88]" style="height: 75%;"></div>
+                        </div>
+                        <span id="throttle-pct" class="text-[9px] text-slate-400 mt-1">75%</span>
+                    </div>
+
+                    <!-- Control Buttons -->
+                    <div class="flex flex-col space-y-1.5 ml-2">
+                        <button id="btn-engine-toggle" class="px-3 py-1 bg-gradient-to-r from-hud-cyan to-blue-500 text-slate-950 font-bold text-[10px] uppercase rounded shadow-[0_0_12px_#00d2ff] hover:opacity-90 transition cursor-pointer flex items-center space-x-1">
+                            <span>⚡ ENGINE ACTIVE</span>
+                        </button>
+                        <button id="btn-recenter" class="px-3 py-1 bg-hud-glass-subtle border border-hud-cyan/40 hover:border-hud-cyan text-slate-300 hover:text-white text-[10px] rounded transition cursor-pointer flex items-center space-x-1">
+                            <span>↺ RE-CENTER 3D</span>
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+    </div>
+
+    <!-- =================================================================
+         THREE.JS 3D SCENE & GHOST HAND LOGIC + MEDIAPIPE TRACKING
+         ================================================================= -->
+    <script>
+        // Global Simulation State
+        const State = {
+            steerAngle: 0.0,         // -1.0 (Left) to +1.0 (Right)
+            smoothedAngle: 0.0,
+            isBraking: false,
+            speed: 162,
+            rpm: 3565,
+            gear: 4,
+            handsDetected: 0,
+            holoHandsVisible: true,
+            holoGlowIntensity: 1.0,
+            cameraMode: 'cockpit',    // 'cockpit' | 'chase' | 'wheel'
+            engineRunning: true
+        };
+
+        // Telemetry WebSocket Handler
+        let ws = null;
+        function initWebSocket() {
+            try {
+                ws = new WebSocket('ws://localhost:8000');
+                ws.onopen = () => console.log('CyberWheel: Telemetry WS Connected');
+                ws.onclose = () => { setTimeout(initWebSocket, 3000); };
+                ws.onerror = () => {};
+            } catch(e) {}
+        }
+        initWebSocket();
+
+        function dispatchTelemetry(angle, brake) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    angle: parseFloat(angle.toFixed(3)),
+                    brake: Boolean(brake),
+                    speed: State.speed,
+                    time: Date.now()
+                }));
+            }
+        }
+
+        // =================================================================
+        // THREE.JS ENGINE SETUP
+        // =================================================================
+        const container = document.getElementById('threejs-viewport');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x030813, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0x0a192f, 1.8);
+        scene.add(ambientLight);
+
+        const cyanKeyLight = new THREE.PointLight(0x00d2ff, 3.5, 50);
+        cyanKeyLight.position.set(0, 5, 8);
+        scene.add(cyanKeyLight);
+
+        const orangeFillLight = new THREE.PointLight(0xfb923c, 2.0, 40);
+        orangeFillLight.position.set(6, 2, 4);
+        scene.add(orangeFillLight);
+
+        // =================================================================
+        // PROCEDURAL CYBER TUNNEL & SPEED PARTICLES
+        // =================================================================
+        const tunnelGroup = new THREE.Group();
+        scene.add(tunnelGroup);
+
+        // Infinite Grid Floor
+        const gridHelper = new THREE.GridHelper(300, 60, 0x00d2ff, 0x07223b);
+        gridHelper.position.y = -2.5;
+        tunnelGroup.add(gridHelper);
+
+        // Neon Warp Rings
+        const ringGeo = new THREE.TorusGeometry(8, 0.08, 16, 40);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0x00d2ff, transparent: true, opacity: 0.5 });
+        const warpRings = [];
+        for (let i = 0; i < 20; i++) {
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.position.z = -i * 12;
+            tunnelGroup.add(ring);
+            warpRings.push(ring);
+        }
+
+        // Speed Streaks / Particle System
+        const particleCount = 450;
+        const particleGeo = new THREE.BufferGeometry();
+        const particlePos = new Float32Array(particleCount * 3);
+        for (let i = 0; i < particleCount * 3; i += 3) {
+            particlePos[i] = (Math.random() - 0.5) * 35;
+            particlePos[i + 1] = (Math.random() - 0.5) * 20;
+            particlePos[i + 2] = -Math.random() * 150;
+        }
+        particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePos, 3));
+        const particleMat = new THREE.PointsMaterial({
+            color: 0x00d2ff,
+            size: 0.25,
+            transparent: true,
+            opacity: 0.8
+        });
+        const particles = new THREE.Points(particleGeo, particleMat);
+        scene.add(particles);
+
+        // =================================================================
+        // 3D COCKPIT & FUTURISTIC VEHICLE RIG
+        // =================================================================
+        const vehicleRig = new THREE.Group();
+        scene.add(vehicleRig);
+
+        // Cockpit Dashboard console mesh
+        const dashGeo = new THREE.BoxGeometry(6, 1.2, 2.5);
+        const dashMat = new THREE.MeshStandardMaterial({
+            color: 0x091424,
+            metalness: 0.8,
+            roughness: 0.3
+        });
+        const dashMesh = new THREE.Mesh(dashGeo, dashMat);
+        dashMesh.position.set(0, -1.2, 0.5);
+        vehicleRig.add(dashMesh);
+
+        // Glowing Trim Lines along cockpit console
+        const trimGeo = new THREE.CylinderGeometry(0.04, 0.04, 6, 8);
+        const trimMat = new THREE.MeshBasicMaterial({ color: 0x00d2ff });
+        const trimMesh = new THREE.Mesh(trimGeo, trimMat);
+        trimMesh.rotation.z = Math.PI / 2;
+        trimMesh.position.set(0, -0.6, 0.8);
+        vehicleRig.add(trimMesh);
+
+        // =================================================================
+        // 3D STEERING WHEEL ASSEMBLY
+        // =================================================================
+        const wheelPivot = new THREE.Group();
+        wheelPivot.position.set(0, -0.2, 1.8);
+        vehicleRig.add(wheelPivot);
+
+        // Steering Rim
+        const wheelRimGeo = new THREE.TorusGeometry(1.3, 0.09, 24, 64);
+        const wheelRimMat = new THREE.MeshStandardMaterial({
+            color: 0x0f223d,
+            emissive: 0x00d2ff,
+            emissiveIntensity: 0.6,
+            roughness: 0.2,
+            metalness: 0.85
+        });
+        const wheelRim = new THREE.Mesh(wheelRimGeo, wheelRimMat);
+        wheelPivot.add(wheelRim);
+
+        // Outer Accent Ring (Upper Cyan, Lower Orange)
+        const outerGripTop = new THREE.Mesh(
+            new THREE.TorusGeometry(1.38, 0.04, 16, 32, Math.PI * 0.7),
+            new THREE.MeshBasicMaterial({ color: 0x00d2ff })
+        );
+        outerGripTop.rotation.z = Math.PI * 0.15;
+        wheelPivot.add(outerGripTop);
+
+        const outerGripBottom = new THREE.Mesh(
+            new THREE.TorusGeometry(1.38, 0.04, 16, 32, Math.PI * 0.7),
+            new THREE.MeshBasicMaterial({ color: 0xfb923c })
+        );
+        outerGripBottom.rotation.z = Math.PI * 1.15;
+        wheelPivot.add(outerGripBottom);
+
+        // Center Wheel Hub
+        const hubGeo = new THREE.CylinderGeometry(0.35, 0.35, 0.15, 32);
+        const hubMat = new THREE.MeshStandardMaterial({
+            color: 0x040d1a,
+            emissive: 0x00d2ff,
+            emissiveIntensity: 0.3,
+            metalness: 0.9,
+            roughness: 0.2
+        });
+        const hub = new THREE.Mesh(hubGeo, hubMat);
+        hub.rotation.x = Math.PI / 2;
+        wheelPivot.add(hub);
+
+        // Hub Emblem Logo
+        const emblemGeo = new THREE.RingGeometry(0.12, 0.2, 24);
+        const emblemMat = new THREE.MeshBasicMaterial({ color: 0x00d2ff, side: THREE.DoubleSide });
+        const emblem = new THREE.Mesh(emblemGeo, emblemMat);
+        emblem.position.z = 0.09;
+        wheelPivot.add(emblem);
+
+        // 3 Spokes (Left, Right, Bottom)
+        const spokeMat = new THREE.MeshStandardMaterial({ color: 0x112744, metalness: 0.8, roughness: 0.3 });
+        for (let angle of [0, Math.PI, -Math.PI / 2]) {
+            const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.12, 0.06), spokeMat);
+            spoke.position.set((Math.cos(angle) * 0.65), (Math.sin(angle) * 0.65), 0);
+            spoke.rotation.z = angle;
+            wheelPivot.add(spoke);
+        }
+
+        // =================================================================
+        // HOLOGRAPHIC 3D GHOST HANDS (CHASE CAM DEPTH PRIORITIZATION)
+        // =================================================================
+        const holoHandsGroup = new THREE.Group();
+        wheelPivot.add(holoHandsGroup);
+
+        // Additive Holographic Shader Material for Ghost Hands
+        const holoMaterial = new THREE.MeshStandardMaterial({
+            color: 0x00ff88,
+            emissive: 0x00d2ff,
+            emissiveIntensity: 1.2,
+            transparent: true,
+            opacity: 0.82,
+            wireframe: false,
+            roughness: 0.2,
+            metalness: 0.9
+        });
+
+        // Set depth prioritization so ghost hands render clearly in Chase Cam
+        holoMaterial.depthTest = true;
+        holoMaterial.depthWrite = false;
+
+        function createHoloHandMesh(isLeft) {
+            const handRoot = new THREE.Group();
+            handRoot.renderOrder = 999; // Highest render order ensures visibility
+
+            // Palm Matrix Plate
+            const palmGeo = new THREE.BoxGeometry(0.32, 0.38, 0.12);
+            const palmMesh = new THREE.Mesh(palmGeo, holoMaterial);
+            palmMesh.renderOrder = 999;
+            handRoot.add(palmMesh);
+
+            // Wrist Connector
+            const wristGeo = new THREE.CylinderGeometry(0.08, 0.1, 0.25, 12);
+            const wristMesh = new THREE.Mesh(wristGeo, holoMaterial);
+            wristMesh.rotation.z = Math.PI / 2;
+            wristMesh.position.set(isLeft ? -0.22 : 0.22, -0.15, 0);
+            wristMesh.renderOrder = 999;
+            handRoot.add(wristMesh);
+
+            // Articulated Fingers (Thumb, Index, Middle, Ring, Pinky)
+            const fingerOffsets = [
+                { x: 0.08, y: 0.24, len: 0.24 },
+                { x: 0.00, y: 0.26, len: 0.26 },
+                { x: -0.08, y: 0.24, len: 0.23 },
+                { x: -0.15, y: 0.20, len: 0.19 }
+            ];
+
+            const fingerGroup = new THREE.Group();
+            fingerOffsets.forEach(f => {
+                const knuckle = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 8), holoMaterial);
+                knuckle.position.set(isLeft ? f.x : -f.x, 0.18, 0);
+                knuckle.renderOrder = 999;
+                fingerGroup.add(knuckle);
+
+                const phalanx = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, f.len, 8), holoMaterial);
+                phalanx.position.set(isLeft ? f.x : -f.x, 0.18 + f.len / 2, 0.04);
+                phalanx.rotation.x = -0.3; // Natural hand grip curvature
+                phalanx.renderOrder = 999;
+                fingerGroup.add(phalanx);
+            });
+            handRoot.add(fingerGroup);
+
+            // Thumb Grip Arc
+            const thumbPhalanx = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.18, 8), holoMaterial);
+            thumbPhalanx.position.set(isLeft ? 0.18 : -0.18, -0.02, 0.06);
+            thumbPhalanx.rotation.z = isLeft ? -0.8 : 0.8;
+            thumbPhalanx.rotation.x = 0.4;
+            thumbPhalanx.renderOrder = 999;
+            handRoot.add(thumbPhalanx);
+
+            // AR Projection Beam connecting Hand to Wheel Grips
+            const beamGeo = new THREE.CylinderGeometry(0.015, 0.015, 0.6, 8);
+            const beamMat = new THREE.MeshBasicMaterial({ color: 0x00d2ff, transparent: true, opacity: 0.5 });
+            const beam = new THREE.Mesh(beamGeo, beamMat);
+            beam.position.set(0, 0, -0.15);
+            beam.rotation.x = Math.PI / 2;
+            beam.renderOrder = 999;
+            handRoot.add(beam);
+
+            return handRoot;
+        }
+
+        // Attach Left & Right Ghost Hands to Wheel rim (9 o'clock & 3 o'clock positions)
+        const leftHoloHand = createHoloHandMesh(true);
+        leftHoloHand.position.set(-1.28, 0.05, 0.12);
+        leftHoloHand.rotation.z = 0.25;
+        holoHandsGroup.add(leftHoloHand);
+
+        const rightHoloHand = createHoloHandMesh(false);
+        rightHoloHand.position.set(1.28, 0.05, 0.12);
+        rightHoloHand.rotation.z = -0.25;
+        holoHandsGroup.add(rightHoloHand);
+
+        // =================================================================
+        // CAMERA ANGLES SETUP
+        // =================================================================
+        const CameraPresets = {
+            cockpit: { pos: new THREE.Vector3(0, 0.4, 3.4), lookAt: new THREE.Vector3(0, 0.1, -10) },
+            chase:   { pos: new THREE.Vector3(0, 2.6, 7.5), lookAt: new THREE.Vector3(0, 0.0, -15) },
+            wheel:   { pos: new THREE.Vector3(0, -0.1, 2.8), lookAt: new THREE.Vector3(0, -0.2, 1.8) }
+        };
+
+        function setCameraMode(mode) {
+            State.cameraMode = mode;
+            document.querySelectorAll('.cam-btn').forEach(b => {
+                b.classList.remove('bg-hud-cyan', 'text-slate-950', 'shadow-[0_0_10px_#00d2ff]');
+                b.classList.add('text-slate-300');
+            });
+            const activeBtn = document.getElementById(`cam-${mode}`);
+            if (activeBtn) {
+                activeBtn.classList.remove('text-slate-300');
+                activeBtn.classList.add('bg-hud-cyan', 'text-slate-950', 'shadow-[0_0_10px_#00d2ff]');
+            }
+        }
+
+        document.getElementById('cam-cockpit').addEventListener('click', () => setCameraMode('cockpit'));
+        document.getElementById('cam-chase').addEventListener('click', () => setCameraMode('chase'));
+        document.getElementById('cam-wheel').addEventListener('click', () => setCameraMode('wheel'));
+
+        // =================================================================
+        // MEDIAPIPE HAND TRACKING & WEBCAM AI
+        // =================================================================
+        const videoElement = document.getElementById('webcam-video');
+        const pipCanvas = document.getElementById('pip-canvas');
+        const pipCtx = pipCanvas.getContext('2d');
+        const standbyOverlay = document.getElementById('pip-standby');
+        let cameraInstance = null;
+        let handsInstance = null;
+
+        function checkFist(landmarks) {
+            // Check index, middle, ring, pinky tips vs PIP joints
+            const indexFolded = landmarks[8].y > landmarks[6].y;
+            const middleFolded = landmarks[12].y > landmarks[10].y;
+            const ringFolded = landmarks[16].y > landmarks[14].y;
+            return indexFolded && middleFolded && ringFolded;
+        }
+
+        function onHandResults(results) {
+            pipCanvas.width = pipCanvas.clientWidth;
+            pipCanvas.height = pipCanvas.clientHeight;
+            const W = pipCanvas.width;
+            const H = pipCanvas.height;
+
+            pipCtx.save();
+            pipCtx.clearRect(0, 0, W, H);
+
+            let hands = results.multiHandLandmarks || [];
+            State.handsDetected = hands.length;
+            document.getElementById('hands-count').innerText = `${hands.length}/2`;
+
+            let brakeDetected = false;
+            let targetAngle = 0;
+
+            const toScreen = (lm) => ({ x: (1 - lm.x) * W, y: lm.y * H });
+
+            // Render glowing neon joints in PiP
+            hands.forEach(landmarks => {
+                if (checkFist(landmarks)) brakeDetected = true;
+                const isBraking = brakeDetected;
+                const color = isBraking ? '#ff0044' : '#00ff88';
+
+                // Connections
+                const connections = window.HAND_CONNECTIONS || [];
+                connections.forEach(([s, e]) => {
+                    const p1 = toScreen(landmarks[s]);
+                    const p2 = toScreen(landmarks[e]);
+                    pipCtx.beginPath();
+                    pipCtx.moveTo(p1.x, p1.y);
+                    pipCtx.lineTo(p2.x, p2.y);
+                    pipCtx.strokeStyle = color;
+                    pipCtx.lineWidth = 1.8;
+                    pipCtx.stroke();
+                });
+
+                // Nodes
+                landmarks.forEach(lm => {
+                    const pt = toScreen(lm);
+                    pipCtx.beginPath();
+                    pipCtx.arc(pt.x, pt.y, 2.5, 0, Math.PI * 2);
+                    pipCtx.fillStyle = '#ffffff';
+                    pipCtx.fill();
+                    pipCtx.strokeStyle = color;
+                    pipCtx.lineWidth = 1.2;
+                    pipCtx.stroke();
+                });
+            });
+
+            // 2-Hand Steering Geometry
+            if (hands.length === 2) {
+                const w0 = toScreen(hands[0][0]);
+                const w1 = toScreen(hands[1][0]);
+                const leftHand = w0.x < w1.x ? w0 : w1;
+                const rightHand = w0.x < w1.x ? w1 : w0;
+
+                const dy = rightHand.y - leftHand.y;
+                const dx = Math.max(10, Math.abs(rightHand.x - leftHand.x));
+                const rad = Math.atan2(dy, dx);
+                targetAngle = Math.max(-1.0, Math.min(1.0, rad * 2.2));
+
+                // Steering bridge in PiP
+                pipCtx.beginPath();
+                pipCtx.moveTo(leftHand.x, leftHand.y);
+                pipCtx.lineTo(rightHand.x, rightHand.y);
+                pipCtx.strokeStyle = '#00d2ff';
+                pipCtx.lineWidth = 2.5;
+                pipCtx.stroke();
+            }
+
+            pipCtx.restore();
+
+            // Apply steering and brake updates
+            if (hands.length > 0) {
+                State.steerAngle = targetAngle;
+                updateSteering(targetAngle);
+                setBrake(
+                    brakeDetected);
+            }
+        }
+
+        async function startMediaPipe() {
+            try {
+                standbyOverlay.style.display = 'none';
+                handsInstance = new window.Hands({
+                    locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+                });
+
+                handsInstance.setOptions({
+                    maxNumHands: 2,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.65,
+                    minTrackingConfidence: 0.65
+                });
+                handsInstance.onResults(onHandResults);
+
+                cameraInstance = new window.Camera(videoElement, {
+                    onFrame: async () => {
+                        if (handsInstance && videoElement.readyState >= 2) {
+                            await handsInstance.send({ image: videoElement });
+                        }
+                    },
+                    width: 640,
+                    height: 360
+                });
+                await cameraInstance.start();
+            } catch (err) {
+                console.warn('Webcam fallback active:', err);
+                standbyOverlay.style.display = 'flex';
+                standbyOverlay.querySelector('.text-slate-400').innerText = 'USE KEYBOARD [◄/►] OR SLIDER';
+            }
+        }
+
+        document.getElementById('btn-activate-camera').addEventListener('click', startMediaPipe);
+        document.getElementById('btn-main-camera').addEventListener('click', startMediaPipe);
+
+        // =================================================================
+        // HUD UI & TICKS GENERATOR
+        // =================================================================
+        const ticksContainer = document.getElementById('ticks-container');
+        const TOTAL_TICKS = 24;
+        for (let i = 0; i < TOTAL_TICKS; i++) {
+            const theta = Math.PI + (i / (TOTAL_TICKS - 1)) * Math.PI;
+            const rInner = 24;
+            const rOuter = 36;
+            const x1 = 90 + rInner * Math.cos(theta);
+            const y1 = 36 + rInner * Math.sin(theta);
+            const x2 = 90 + rOuter * Math.cos(theta);
+            const y2 = 36 + rOuter * Math.sin(theta);
+
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('x1', x1);
+            line.setAttribute('y1', y1);
+            line.setAttribute('x2', x2);
+            line.setAttribute('y2', y2);
+            line.setAttribute('stroke', 'rgba(0, 210, 255, 0.25)');
+            line.setAttribute('stroke-width', '2');
+            line.setAttribute('stroke-linecap', 'round');
+            line.id = `tick-${i}`;
+            ticksContainer.appendChild(line);
+        }
+
+        function updateSteering(val) {
+            State.steerAngle = THREE.MathUtils.clamp(val, -1.0, 1.0);
+            document.getElementById('steer-slider').value = State.steerAngle;
+
+            const deg = Math.round(Math.abs(State.steerAngle * 90));
+            const dir = State.steerAngle > 0.05 ? 'RIGHT' : State.steerAngle < -0.05 ? 'LEFT' : 'CENTER';
+            const signed = (State.steerAngle >= 0 ? '+' : '') + State.steerAngle.toFixed(2);
+            document.getElementById('angle-readout').innerText = `${signed} (${deg}° ${dir})`;
+
+            // Banner
+            const banner = document.getElementById('turn-banner');
+            if (dir === 'RIGHT') {
+                banner.innerText = 'TURNING RIGHT >>>';
+                banner.className = 'text-xl font-bold font-orbitron text-hud-cyan glow-cyan tracking-wider';
+            } else if (dir === 'LEFT') {
+                banner.innerText = '<<< TURNING LEFT';
+                banner.className = 'text-xl font-bold font-orbitron text-hud-orange glow-orange tracking-wider';
+            } else {
+                banner.innerText = '— NEUTRAL STEER —';
+                banner.className = 'text-xl font-bold font-orbitron text-slate-400 tracking-wider';
+            }
+
+            // Radial Ticks update
+            const activeIdx = Math.round(((State.steerAngle + 1) / 2) * (TOTAL_TICKS - 1));
+            for (let i = 0; i < TOTAL_TICKS; i++) {
+                const tick = document.getElementById(`tick-${i}`);
+                if (!tick) continue;
+                const isRight = i >= TOTAL_TICKS / 2;
+                const col = isRight ? '#fb923c' : '#00d2ff';
+                const isActive = (State.steerAngle >= 0 && i >= TOTAL_TICKS / 2 && i <= activeIdx) ||
+                                 (State.steerAngle < 0 && i <= TOTAL_TICKS / 2 && i >= activeIdx);
+                tick.setAttribute('stroke', isActive ? col : 'rgba(0, 210, 255, 0.25)');
+                tick.setAttribute('stroke-width', isActive ? '3.5' : '2');
+            }
+
+            // Artificial Horizon & Gyro Ball Tilt
+            const horizon = document.getElementById('horizon-reticle');
+            horizon.style.transform = `rotate(${State.steerAngle * -18}deg)`;
+
+            const gyroDot = document.getElementById('gyro-dot');
+            gyroDot.style.transform = `translate(${State.steerAngle * 26}px, ${State.isBraking ? 12 : -4}px)`;
+            document.getElementById('g-lat').innerText = `${(State.steerAngle * 0.95).toFixed(2)} G`;
+
+            dispatchTelemetry(State.steerAngle, State.isBraking);
+        }
+
+        function setBrake(active) {
+            State.isBraking = active;
+            const brakeBar = document.getElementById('brake-bar');
+            const brakePct = document.getElementById('brake-pct');
+            const throttleBar = document.getElementById('throttle-bar');
+            const throttlePct = document.getElementById('throttle-pct');
+
+            if (active) {
+                brakeBar.style.height = '100%';
+                brakePct.innerText = '100%';
+                brakePct.className = 'text-[9px] text-hud-red font-bold';
+                throttleBar.style.height = '0%';
+                throttlePct.innerText = '0%';
+                holoMaterial.emissive.setHex(0xff0044); // Glow red on brake!
+            } else {
+                brakeBar.style.height = '0%';
+                brakePct.innerText = '0%';
+                brakePct.className = 'text-[9px] text-slate-400';
+                throttleBar.style.height = '75%';
+                throttlePct.innerText = '75%';
+                holoMaterial.emissive.setHex(0x00d2ff); // Return to cyber cyan
+            }
+        }
+
+        // =================================================================
+        // USER CONTROLS: SLIDER, BUTTONS & KEYBOARD
+        // =================================================================
+        document.getElementById('steer-slider').addEventListener('input', (e) => {
+            updateSteering(parseFloat(e.target.value));
+        });
+
+        document.getElementById('btn-recenter').addEventListener('click', () => {
+            updateSteering(0);
+        });
+
+        // Holo Hands On/Off toggle
+        document.getElementById('holo-hands-toggle').addEventListener('click', () => {
+            State.holoHandsVisible = !State.holoHandsVisible;
+            holoHandsGroup.visible = State.holoHandsVisible;
+            document.getElementById('holo-label').innerText = `HOLO HANDS: ${State.holoHandsVisible ? 'ON' : 'OFF'}`;
+            document.getElementById('holo-dot').className = `w-2 h-2 rounded-full ${State.holoHandsVisible ? 'bg-hud-green animate-pulse' : 'bg-slate-600'}`;
+        });
+
+        // Glow Slider
+        document.getElementById('glow-slider').addEventListener('input', (e) => {
+            State.holoGlowIntensity = parseFloat(e.target.value);
+            holoMaterial.emissiveIntensity = State.holoGlowIntensity * 1.2;
+            holoMaterial.opacity = THREE.MathUtils.clamp(State.holoGlowIntensity * 0.8, 0.2, 1.0);
+        });
+
+        // Keyboard hotkeys
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'ArrowLeft') {
+                updateSteering(Math.max(-1.0, State.steerAngle - 0.12));
+            } else if (e.code === 'ArrowRight') {
+                updateSteering(Math.min(1.0, State.steerAngle + 0.12));
+            } else if (e.code === 'Space') {
+                setBrake(true);
+            } else if (e.code === 'KeyC') {
+                // Cycle Camera views
+                const modes = ['cockpit', 'chase', 'wheel'];
+                const nextIdx = (modes.indexOf(State.cameraMode) + 1) % modes.length;
+                setCameraMode(modes[nextIdx]);
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+                updateSteering(0);
+            } else if (e.code === 'Space') {
+                setBrake(false);
+            }
+        });
+
+        // Window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // =================================================================
+        // MAIN ANIMATION RENDER LOOP (60 FPS)
+        // =================================================================
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            // Smooth steering interpolation
+            State.smoothedAngle = THREE.MathUtils.lerp(State.smoothedAngle, State.steerAngle, 0.18);
+
+            // Wheel rotation & banking
+            wheelPivot.rotation.z = -State.smoothedAngle * 1.45; // Physical wheel rotation
+            vehicleRig.rotation.z = THREE.MathUtils.lerp(vehicleRig.rotation.z, State.smoothedAngle * 0.08, 0.1);
+            vehicleRig.position.x = THREE.MathUtils.lerp(vehicleRig.position.x, -State.smoothedAngle * 0.4, 0.1);
+
+            // Cockpit engine vibration
+            if (State.engineRunning) {
+                const vib = Math.sin(time * 30) * 0.003;
+                vehicleRig.position.y = vib;
+            }
+
+            // Holographic Hands slight float pulsation
+            if (State.holoHandsVisible) {
+                const pulse = 1.0 + Math.sin(time * 6) * 0.12;
+                holoMaterial.emissiveIntensity = State.holoGlowIntensity * 1.2 * pulse;
+            }
+
+            // Tunnel speed physics
+            const currentSpeed = State.isBraking ? 60 : State.speed;
+            const warpVelocity = (currentSpeed / 30) * delta;
+            warpRings.forEach(ring => {
+                ring.position.z += warpVelocity * 14;
+                if (ring.position.z > 8) ring.position.z = -230;
+            });
+
+            // Particles flow
+            const pos = particleGeo.attributes.position.array;
+            for (let i = 2; i < pos.length; i += 3) {
+                pos[i] += warpVelocity * 22;
+                if (pos[i] > 10) pos[i] = -150;
+            }
+            particleGeo.attributes.position.needsUpdate = true;
+
+            // Camera Viewport Interpolation
+            const targetCam = CameraPresets[State.cameraMode];
+            camera.position.lerp(targetCam.pos, 0.08);
+            camera.lookAt(targetCam.lookAt);
+
+            // Random Telemetry Flicker
+            if (Math.random() < 0.1) {
+                const spd = Math.round(State.isBraking ? 75 + Math.random() * 5 : 160 + Math.random() * 6);
+                const rpm = Math.round(State.isBraking ? 1800 + Math.random() * 200 : 3540 + Math.random() * 120);
+                document.getElementById('speed-val').innerText = spd;
+                document.getElementById('rpm-val').innerText = rpm.toLocaleString();
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Initialize HUD
+        updateSteering(0);
+        setCameraMode('cockpit');
+        animate();
+    </script>
+</body>
+</html>
